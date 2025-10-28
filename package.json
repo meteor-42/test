@@ -1,0 +1,20 @@
+{
+  "name": "xmr-tor-paywall",
+  "version": "1.0.0",
+  "description": "Anonymous paywall service with Monero payments running on Tor",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["tor", "monero", "xmr", "paywall", "privacy", "anonymous"],
+  "author": "ZeroTrails",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
