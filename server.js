@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const http = require('http');
 const fs = require('fs');
@@ -54,7 +54,7 @@ class TorBlogServer {
     // Проверка критических переменных .env
     checkEnv() {
         const requiredVars = [
-            'IRONFISH_ADDRESS', 'CONTACT_EMAIL', 'GPG_FINGERPRINT', 
+            'IRONFISH_ADDRESS', 'CONTACT_EMAIL', 'GPG_FINGERPRINT',
             'ONION_ADDRESS', 'KEYSERVER_URL'
         ];
         let missing = requiredVars.filter(v => !process.env[v] || process.env[v].trim() === '');
@@ -189,7 +189,7 @@ class TorBlogServer {
 🔒 CLICK: keyserver
 </div>
 <div class="download-links">
-<a href="${this.downloadEncryptGuide}">Email Encryption Guide</a> | 
+<a href="${this.downloadEncryptGuide}">Email Encryption Guide</a> |
 <a href="${this.downloadKleopatraWindows}">Kleopatra for Windows</a>
 </div>
 </div>
@@ -405,14 +405,14 @@ document.addEventListener('click', function(e) {
 
     getContentType(ext) {
         const contentTypes = {
-            '.html': 'text/html', 
-            '.css': 'text/css', 
+            '.html': 'text/html',
+            '.css': 'text/css',
             '.js': 'application/javascript',
-            '.png': 'image/png', 
-            '.jpg': 'image/jpeg', 
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
             '.jpeg': 'image/jpeg',
-            '.gif': 'image/gif', 
-            '.svg': 'image/svg+xml', 
+            '.gif': 'image/gif',
+            '.svg': 'image/svg+xml',
             '.json': 'application/json',
             '.txt': 'text/plain',
             '.pdf': 'application/pdf',
