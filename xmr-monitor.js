@@ -7,7 +7,7 @@ class PaymentMonitor {
     constructor() {
         this.paymentsFile = process.env.PAYMENTS_FILE || './payments.json';
         this.payments = this.loadPayments();
-        this.rpcUrl = process.env.XMR_RPC_URL; // monero-wallet-rpc JSON RPC endpoint
+        this.rpcUrl = process.env.XMR_RPC_URL;
         this.rpcUsername = process.env.XMR_RPC_USERNAME || '';
         this.rpcPassword = process.env.XMR_RPC_PASSWORD || '';
         this.accountIndex = parseInt(process.env.XMR_ACCOUNT_INDEX || '0', 10);
@@ -16,30 +16,59 @@ class PaymentMonitor {
         this.viewKey = process.env.XMR_VIEW_KEY || '';
         this.amountXmr = parseFloat(process.env.XMR_PAYMENT_AMOUNT || '0.1');
         this.amountAtomic = Math.round(this.amountXmr * 1e12);
+
+        console.log(`💰 Monero monitor initialized: ${this.amountXmr} XMR required`);
     }
 
     startMonitoring() {
-        setInterval(() => this.checkPayments(), 15000); // каждые 15 секунд
+        console.log('🔍 Starting payment monitoring (every 15 seconds)...');
+        setInterval(() => this.checkPayments(), 15000);
     }
 
     async checkPayments() {
-        for (const memo in this.payments) {
-            const payment = this.payments[memo];
-            if (payment.status === 'pending' && typeof payment.subaddressIndex === 'number') {
-                const confirmed = await this.checkTransaction(payment.subaddressIndex);
-                if (confirmed) {
-                    payment.status = 'confirmed';
-                    payment.access_token = this.generateToken();
-                    payment.confirmed_at = Date.now();
-                    this.savePayments();
-                }
+        // Оптимизация: проверяем только pending платежи
+        const pendingPayments = Object.entries(this.payments)
+            .filter(([_, payment]) => payment.status === 'pending' && typeof payment.subaddressIndex === 'number');
+
+        if (pendingPayments.length === 0) {
+            return; // Нет pending платежей
+        }
+
+        let updated = false;
+        for (const [memo, payment] of pendingPayments) {
+            const confirmed = await this.checkTransactionWithRetry(payment.subaddressIndex);
+            if (confirmed) {
+                payment.status = 'confirmed';
+                payment.access_token = this.generateToken();
+                payment.confirmed_at = Date.now();
+                updated = true;
+                console.log(`✅ Payment confirmed: ${memo} -> token: ${payment.access_token}`);
             }
         }
+
+        if (updated) {
+            this.savePayments();
+        }
+    }
+
+    async checkTransactionWithRetry(subaddressIndex, retries = 3) {
+        for (let i = 0; i < retries; i++) {
+            try {
+                return await this.checkTransaction(subaddressIndex);
+            } catch (error) {
+                if (i === retries - 1) {
+                    console.error(`❌ Failed to check transaction after ${retries} attempts:`, error.message);
+                    return false;
+                }
+                await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+            }
+        }
+        return false;
     }
 
     async checkTransaction(subaddressIndex) {
         if (!this.rpcUrl) {
-            console.warn('XMR_RPC_URL not set; cannot check transactions');
+            console.warn('⚠️  XMR_RPC_URL not set; cannot check transactions');
             return false;
         }
         try {
@@ -65,8 +94,8 @@ class PaymentMonitor {
                 return idx === subaddressIndex && confirmations >= this.confirmationsRequired && amount >= this.amountAtomic;
             });
         } catch (e) {
-            console.error('RPC error (get_transfers):', e.response?.data || e.message);
-            return false;
+            console.error('❌ RPC error (get_transfers):', e.response?.data || e.message);
+            throw e;
         }
     }
 
@@ -91,14 +120,16 @@ class PaymentMonitor {
                 );
                 subaddressIndex = resp.data?.result?.address_index;
                 subaddress = resp.data?.result?.address;
+                console.log(`📝 Created subaddress for ${memo}: index ${subaddressIndex}`);
             } catch (e) {
-                console.error('RPC error (create_address):', e.response?.data || e.message);
+                console.error('❌ RPC error (create_address):', e.response?.data || e.message);
             }
         }
 
         // Fallbacks
         if (typeof subaddressIndex !== 'number') {
             subaddressIndex = Object.keys(this.payments).length + 1;
+            console.warn(`⚠️  Using fallback subaddress index: ${subaddressIndex}`);
         }
         if (!subaddress) {
             subaddress = this.mainAddress ? `${this.mainAddress}` : `ADDRESS_${subaddressIndex}`;
@@ -116,14 +147,21 @@ class PaymentMonitor {
 
     loadPayments() {
         try {
-            return JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8'));
+            const data = JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8'));
+            console.log(`📊 Loaded ${Object.keys(data).length} payments from database`);
+            return data;
         } catch {
+            console.log('📊 Creating new payments database');
             return {};
         }
     }
 
     savePayments() {
-        fs.writeFileSync(this.paymentsFile, JSON.stringify(this.payments, null, 2));
+        try {
+            fs.writeFileSync(this.paymentsFile, JSON.stringify(this.payments, null, 2));
+        } catch (e) {
+            console.error('❌ Failed to save payments:', e.message);
+        }
     }
 
     rpcAuth() {
