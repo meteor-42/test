@@ -1,16 +1,21 @@
 // xmr-monitor.js
 const axios = require('axios');
 const fs = require('fs');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 class PaymentMonitor {
     constructor() {
         this.paymentsFile = process.env.PAYMENTS_FILE || './payments.json';
         this.payments = this.loadPayments();
-        this.rpcUrl = process.env.XMR_RPC_URL;
-        this.mainAddress = process.env.XMR_ADDRESS;
-        this.viewKey = process.env.XMR_VIEW_KEY;
-        this.amount = parseFloat(process.env.XMR_PAYMENT_AMOUNT) || 0.1;
+        this.rpcUrl = process.env.XMR_RPC_URL; // monero-wallet-rpc JSON RPC endpoint
+        this.rpcUsername = process.env.XMR_RPC_USERNAME || '';
+        this.rpcPassword = process.env.XMR_RPC_PASSWORD || '';
+        this.accountIndex = parseInt(process.env.XMR_ACCOUNT_INDEX || '0', 10);
+        this.confirmationsRequired = parseInt(process.env.XMR_CONFIRMATIONS || '2', 10);
+        this.mainAddress = process.env.XMR_ADDRESS || '';
+        this.viewKey = process.env.XMR_VIEW_KEY || '';
+        this.amountXmr = parseFloat(process.env.XMR_PAYMENT_AMOUNT || '0.1');
+        this.amountAtomic = Math.round(this.amountXmr * 1e12);
     }
 
     startMonitoring() {
@@ -20,41 +25,86 @@ class PaymentMonitor {
     async checkPayments() {
         for (const memo in this.payments) {
             const payment = this.payments[memo];
-            if (payment.status === 'pending') {
-                const confirmed = await this.checkTransaction(payment.subaddressIndex, memo);
+            if (payment.status === 'pending' && typeof payment.subaddressIndex === 'number') {
+                const confirmed = await this.checkTransaction(payment.subaddressIndex);
                 if (confirmed) {
                     payment.status = 'confirmed';
                     payment.access_token = this.generateToken();
+                    payment.confirmed_at = Date.now();
                     this.savePayments();
                 }
             }
         }
     }
 
-    async checkTransaction(subaddressIndex, memo) {
+    async checkTransaction(subaddressIndex) {
+        if (!this.rpcUrl) {
+            console.warn('XMR_RPC_URL not set; cannot check transactions');
+            return false;
+        }
         try {
-            const response = await axios.post(this.rpcUrl, {
-                jsonrpc: "2.0",
-                id: "0",
-                method: "get_transfers",
-                params: {
-                    in: true,
-                    account_index: 0,
-                    subaddr_indices: [subaddressIndex]
-                }
+            const response = await axios.post(
+                this.rpcUrl,
+                {
+                    jsonrpc: "2.0",
+                    id: "0",
+                    method: "get_transfers",
+                    params: {
+                        in: true,
+                        account_index: this.accountIndex,
+                        subaddr_indices: [subaddressIndex]
+                    }
+                },
+                this.rpcAuth()
+            );
+            const transfers = (response.data && response.data.result && response.data.result.in) || [];
+            return transfers.some(tx => {
+                const confirmations = (tx.confirmations || 0);
+                const amount = Number(tx.amount || 0);
+                const idx = tx.subaddr_index && typeof tx.subaddr_index.minor === 'number' ? tx.subaddr_index.minor : subaddressIndex;
+                return idx === subaddressIndex && confirmations >= this.confirmationsRequired && amount >= this.amountAtomic;
             });
-            const transfers = response.data.result.in || [];
-            return transfers.some(tx => tx.payment_id === memo && tx.amount >= this.amount * 1e12);
         } catch (e) {
-            console.error('RPC error:', e.message);
+            console.error('RPC error (get_transfers):', e.response?.data || e.message);
             return false;
         }
     }
 
-    addPayment(memo) {
-        const subaddressIndex = Object.keys(this.payments).length + 1;
-        const subaddress = `${this.mainAddress}+${subaddressIndex}`; // просто placeholder, реальная генерация через RPC
-        const payment = { memo, subaddress, subaddressIndex, status: 'pending' };
+    async addPayment(memo) {
+        // If already exists, return it
+        if (this.payments[memo]) return this.payments[memo];
+
+        let subaddressIndex = undefined;
+        let subaddress = undefined;
+
+        if (this.rpcUrl) {
+            try {
+                const resp = await axios.post(
+                    this.rpcUrl,
+                    {
+                        jsonrpc: "2.0",
+                        id: "0",
+                        method: "create_address",
+                        params: { account_index: this.accountIndex, label: memo }
+                    },
+                    this.rpcAuth()
+                );
+                subaddressIndex = resp.data?.result?.address_index;
+                subaddress = resp.data?.result?.address;
+            } catch (e) {
+                console.error('RPC error (create_address):', e.response?.data || e.message);
+            }
+        }
+
+        // Fallbacks
+        if (typeof subaddressIndex !== 'number') {
+            subaddressIndex = Object.keys(this.payments).length + 1;
+        }
+        if (!subaddress) {
+            subaddress = this.mainAddress ? `${this.mainAddress}` : `ADDRESS_${subaddressIndex}`;
+        }
+
+        const payment = { memo, subaddress, subaddressIndex, status: 'pending', created_at: Date.now() };
         this.payments[memo] = payment;
         this.savePayments();
         return payment;
@@ -74,6 +124,14 @@ class PaymentMonitor {
 
     savePayments() {
         fs.writeFileSync(this.paymentsFile, JSON.stringify(this.payments, null, 2));
+    }
+
+    rpcAuth() {
+        const config = {};
+        if (this.rpcUsername || this.rpcPassword) {
+            config.auth = { username: this.rpcUsername, password: this.rpcPassword };
+        }
+        return config;
     }
 }
 
