@@ -6,12 +6,10 @@ const path = require('path');
 const url = require('url');
 const querystring = require('querystring');
 
-const AccessControl = require('./auth');
-const PaymentMonitor = require('./xmr-monitor');
+const XMRManager = require('./xmr-manager');
 const RateLimiter = require('./rate-limiter');
 
-const accessControl = new AccessControl();
-const paymentMonitor = new PaymentMonitor();
+const xmrManager = new XMRManager();
 const rateLimiter = new RateLimiter(5, 60000); // 5 requests per minute
 
 // Constants
@@ -58,7 +56,7 @@ class TorBlogServer {
         this.ensureDownloadsFolder();
 
         this.server = this.startServer();
-        paymentMonitor.startMonitoring();
+        xmrManager.startMonitoring();
         this.setupGracefulShutdown();
     }
 
@@ -124,7 +122,7 @@ class TorBlogServer {
     async servePaywall(req, res) {
         const randomId = this.generateRandomId(CONFIG.ACCESS_CODE_LENGTH);
 
-        const payment = await paymentMonitor.addPayment(randomId);
+        const payment = await xmrManager.addPayment(randomId);
         const payAddress = (payment && payment.subaddress) ? payment.subaddress : this.xmrAddress;
 
         const html = this.fillTemplate({
@@ -212,7 +210,7 @@ class TorBlogServer {
             }
 
             const memo = memoCode.replace('ACCESS-', '');
-            const payment = paymentMonitor.payments[memo];
+            const payment = xmrManager.payments[memo];
 
             if (payment && payment.status === 'confirmed') {
                 this.sendJsonSuccess(res, `/blog?token=${payment.access_token}`);
@@ -243,7 +241,7 @@ class TorBlogServer {
 
     serveBlog(req, res, pathname, parsedUrl) {
         const token = parsedUrl.query.token;
-        if (!token || !accessControl.validateToken(token) || !accessControl.checkAccess(token)) {
+        if (!token || !xmrManager.validateToken(token) || !xmrManager.checkAccess(token)) {
             this.servePaywall(req, res);
             return;
         }
@@ -320,7 +318,7 @@ class TorBlogServer {
             status: 'ok',
             uptime: process.uptime(),
             timestamp: Date.now(),
-            rpc_connected: !!paymentMonitor.rpcUrl
+            rpc_connected: !!xmrManager.rpcUrl
         };
         this.sendJsonResponse(res, 200, health);
     }
@@ -363,7 +361,7 @@ class TorBlogServer {
             console.log(`\n${signal} received, shutting down gracefully...`);
             this.server.close(() => {
                 console.log('✅ Server closed');
-                paymentMonitor.savePayments();
+                xmrManager.savePayments();
                 console.log('✅ Payments saved');
                 process.exit(0);
             });
