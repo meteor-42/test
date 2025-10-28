@@ -80,7 +80,8 @@ class TorBlogServer {
 
             try {
                 if (pathname === '/' && req.method === 'GET') {
-                    this.servePaywall(req, res);
+                    // Await servePaywall if it's async
+                    Promise.resolve(this.servePaywall(req, res));
                 } else if (pathname === '/check-access' && req.method === 'POST') {
                     this.handleAccessCheck(req, res, parsedUrl);
                 } else if (pathname === '/blog' || pathname.startsWith('/blog/')) {
@@ -92,7 +93,7 @@ class TorBlogServer {
                 }
             } catch (error) {
                 console.error('Server error:', error);
-                this.servePaywall(req, res);
+                Promise.resolve(this.servePaywall(req, res));
             }
         });
 
@@ -107,8 +108,12 @@ class TorBlogServer {
             console.error('❌ Server error:', error);
         });
     }
-    servePaywall(req, res) {
+
+    async servePaywall(req, res) {
         const randomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+        const payment = await paymentMonitor.addPayment(randomId);
+        const payAddress = (payment && payment.subaddress) ? payment.subaddress : this.ironfishAddress;
 
         const html = `<!DOCTYPE html>
 <html lang="en">
@@ -123,7 +128,7 @@ class TorBlogServer {
 <meta name="onion-location" content="${this.onionAddress}">
 <meta name="onion-service" content="true">
 <meta name="language" content="en">
-<link rel="stylesheet" href="./index.css">
+<link rel="stylesheet" href="./main.css">
 </head>
 <body>
 <div class="container">
@@ -162,13 +167,14 @@ class TorBlogServer {
 <h3>[>] PAYMENT INSTRUCTIONS:</h3>
 <ol>
 <li>Send <strong>${this.ironfishPrice} $${this.currencyName}</strong> to address:</li>
-<code>${this.ironfishAddress}</code>
-<li><strong>MUST INCLUDE IN MEMO FIELD:</strong></li>
+<code>${payAddress}</code>
+<li><strong>YOUR ACCESS CODE:</strong></li>
 <code style="background: #000000ff; color: rgba(172, 255, 174, 1); font-size: 1em;">ACCESS-${randomId}</code>
+<li style="margin-top:8px;">Do NOT include this code in your Monero transaction. Use it below to unlock access after your payment confirms.</li>
 </ol>
 </div>
 <div class="access-form">
-<p>ENTER MEMO CODE TO ACCESS:</p>
+<p>ENTER ACCESS CODE TO ACCESS:</p>
 <div class="error-message" id="errorMessage">
 <button class="close-btn" onclick="closeError()">&times;</button>
 <div id="errorContent"></div>
@@ -285,7 +291,7 @@ document.addEventListener('click', function(e) {
 
         fs.access(filePath, fs.constants.F_OK, (err) => {
             if (err) {
-                this.servePaywall(req, res);
+                Promise.resolve(this.servePaywall(req, res));
                 return;
             }
 
@@ -316,18 +322,18 @@ document.addEventListener('click', function(e) {
             }
 
             const payments = this.loadPayments();
-            const payment = Object.values(payments).find(p => p.memo === memoCode && p.status === 'confirmed');
+            // Adjusted: match payments entry by access code (without "ACCESS-"), and confirmed status
+            const payment = Object.values(payments).find(p => p.memo === memoCode.replace('ACCESS-','') && p.status === 'confirmed');
 
             if (payment) {
                 this.sendJsonSuccess(res, `/blog?token=${payment.access_token}`);
             } else {
                 const reasons = [
-                    'Transaction not confirmed yet (wait 1-2 minutes)',
+                    'Transaction not confirmed yet (wait ~1-2 minutes after paying)',
                     `Payment amount less than ${this.ironfishPrice} $${this.currencyName}`,
-                    'Wrong recipient address',
-                    'Memo code is case-sensitive'
+                    'Wrong recipient address (use the address shown above)',
                 ];
-                this.sendJsonError(res, `Payment with memo code ${memoCode} not found`, reasons);
+                this.sendJsonError(res, `Payment with access code ${memoCode} not found or not confirmed`, reasons);
             }
         });
     }
@@ -349,7 +355,7 @@ document.addEventListener('click', function(e) {
     serveBlog(req, res, pathname, parsedUrl) {
         const token = parsedUrl.query.token;
         if (!token || !accessControl.checkAccess(token)) {
-            this.servePaywall(req, res);
+            Promise.resolve(this.servePaywall(req, res));
             return;
         }
 
@@ -362,10 +368,10 @@ document.addEventListener('click', function(e) {
         const fullPath = path.join(this.publicPath, filePath);
 
         fs.access(fullPath, fs.constants.F_OK, (err) => {
-            if (err) { this.servePaywall(req, res); return; }
+            if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
 
             fs.readFile(fullPath, 'utf8', (err, data) => {
-                if (err) { this.servePaywall(req, res); return; }
+                if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
 
                 if (path.extname(fullPath).toLowerCase() === '.html') {
                     data = this.injectTokenIntoContent(data, token);
@@ -388,14 +394,14 @@ document.addEventListener('click', function(e) {
     }
 
     serveStatic(req, res, pathname) {
-        if (pathname === '/' || pathname.startsWith('/blog')) { this.servePaywall(req, res); return; }
+        if (pathname === '/' || pathname.startsWith('/blog')) { Promise.resolve(this.servePaywall(req, res)); return; }
 
         const fullPath = path.join(this.publicPath, pathname);
         fs.access(fullPath, fs.constants.F_OK, (err) => {
-            if (err) { this.servePaywall(req, res); return; }
+            if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
 
             fs.readFile(fullPath, (err, data) => {
-                if (err) { this.servePaywall(req, res); return; }
+                if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
 
                 const contentType = this.getContentType(path.extname(fullPath).toLowerCase());
                 this.sendResponse(res, 200, contentType, data);
