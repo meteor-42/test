@@ -1,24 +1,32 @@
-// xmr-monitor.js
+// xmr-manager.js
+// Unified Monero Payment Manager - объединяет xmr-monitor, auth, payments-manager
 const axios = require('axios');
 const fs = require('fs');
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
-class PaymentMonitor {
+class XMRManager {
     constructor() {
+        // File storage
         this.paymentsFile = process.env.PAYMENTS_FILE || './payments.json';
         this.payments = this.loadPayments();
+
+        // RPC settings
         this.rpcUrl = process.env.XMR_RPC_URL;
         this.rpcUsername = process.env.XMR_RPC_USERNAME || '';
         this.rpcPassword = process.env.XMR_RPC_PASSWORD || '';
         this.accountIndex = parseInt(process.env.XMR_ACCOUNT_INDEX || '0', 10);
         this.confirmationsRequired = parseInt(process.env.XMR_CONFIRMATIONS || '2', 10);
+
+        // Wallet info
         this.mainAddress = process.env.XMR_ADDRESS || '';
         this.viewKey = process.env.XMR_VIEW_KEY || '';
         this.amountXmr = parseFloat(process.env.XMR_PAYMENT_AMOUNT || '0.1');
         this.amountAtomic = Math.round(this.amountXmr * 1e12);
 
-        console.log(`💰 Monero monitor initialized: ${this.amountXmr} XMR required`);
+        console.log(`💰 XMR Manager initialized: ${this.amountXmr} XMR required`);
     }
+
+    // ========== MONITORING ==========
 
     startMonitoring() {
         console.log('🔍 Starting payment monitoring (every 15 seconds)...');
@@ -26,13 +34,10 @@ class PaymentMonitor {
     }
 
     async checkPayments() {
-        // Оптимизация: проверяем только pending платежи
         const pendingPayments = Object.entries(this.payments)
             .filter(([_, payment]) => payment.status === 'pending' && typeof payment.subaddressIndex === 'number');
 
-        if (pendingPayments.length === 0) {
-            return; // Нет pending платежей
-        }
+        if (pendingPayments.length === 0) return;
 
         let updated = false;
         for (const [memo, payment] of pendingPayments) {
@@ -46,9 +51,7 @@ class PaymentMonitor {
             }
         }
 
-        if (updated) {
-            this.savePayments();
-        }
+        if (updated) this.savePayments();
     }
 
     async checkTransactionWithRetry(subaddressIndex, retries = 3) {
@@ -90,7 +93,8 @@ class PaymentMonitor {
             return transfers.some(tx => {
                 const confirmations = (tx.confirmations || 0);
                 const amount = Number(tx.amount || 0);
-                const idx = tx.subaddr_index && typeof tx.subaddr_index.minor === 'number' ? tx.subaddr_index.minor : subaddressIndex;
+                const idx = tx.subaddr_index && typeof tx.subaddr_index.minor === 'number'
+                    ? tx.subaddr_index.minor : subaddressIndex;
                 return idx === subaddressIndex && confirmations >= this.confirmationsRequired && amount >= this.amountAtomic;
             });
         } catch (e) {
@@ -100,7 +104,6 @@ class PaymentMonitor {
     }
 
     async addPayment(memo) {
-        // If already exists, return it
         if (this.payments[memo]) return this.payments[memo];
 
         let subaddressIndex = undefined;
@@ -126,7 +129,6 @@ class PaymentMonitor {
             }
         }
 
-        // Fallbacks
         if (typeof subaddressIndex !== 'number') {
             subaddressIndex = Object.keys(this.payments).length + 1;
             console.warn(`⚠️  Using fallback subaddress index: ${subaddressIndex}`);
@@ -135,11 +137,72 @@ class PaymentMonitor {
             subaddress = this.mainAddress ? `${this.mainAddress}` : `ADDRESS_${subaddressIndex}`;
         }
 
-        const payment = { memo, subaddress, subaddressIndex, status: 'pending', created_at: Date.now() };
+        const payment = {
+            memo,
+            subaddress,
+            subaddressIndex,
+            status: 'pending',
+            created_at: Date.now()
+        };
         this.payments[memo] = payment;
         this.savePayments();
         return payment;
     }
+
+    // ========== ACCESS CONTROL ==========
+
+    checkAccess(token) {
+        if (!token) return false;
+        return !!this.findByToken(token);
+    }
+
+    validateToken(token) {
+        return typeof token === 'string' && /^[a-z0-9]{10}$/i.test(token);
+    }
+
+    // ========== PAYMENTS SEARCH ==========
+
+    findByToken(token) {
+        return Object.values(this.payments).find(
+            p => p && p.status === 'confirmed' && p.access_token === token
+        );
+    }
+
+    findByMemo(memo) {
+        return Object.values(this.payments).find(
+            p => p && p.memo === memo && p.status === 'confirmed'
+        );
+    }
+
+    getPendingPayments(maxAgeMs = 24 * 60 * 60 * 1000) {
+        const now = Date.now();
+        return Object.values(this.payments).filter(p =>
+            p && p.status === 'pending' &&
+            (now - p.created_at) < maxAgeMs
+        );
+    }
+
+    cleanupOldPayments(maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
+        const now = Date.now();
+        let cleaned = 0;
+
+        for (const memo in this.payments) {
+            const payment = this.payments[memo];
+            if (payment && payment.status === 'pending' && (now - payment.created_at) > maxAgeMs) {
+                delete this.payments[memo];
+                cleaned++;
+            }
+        }
+
+        if (cleaned > 0) {
+            this.savePayments();
+            console.log(`🗑️  Cleaned up ${cleaned} old pending payments`);
+        }
+
+        return cleaned;
+    }
+
+    // ========== UTILITIES ==========
 
     generateToken() {
         return Math.random().toString(36).substring(2, 12);
@@ -173,4 +236,4 @@ class PaymentMonitor {
     }
 }
 
-module.exports = PaymentMonitor;
+module.exports = XMRManager;
