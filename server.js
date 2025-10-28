@@ -8,32 +8,42 @@ const querystring = require('querystring');
 
 const AccessControl = require('./auth');
 const PaymentMonitor = require('./xmr-monitor');
+const RateLimiter = require('./rate-limiter');
 
 const accessControl = new AccessControl();
 const paymentMonitor = new PaymentMonitor();
+const rateLimiter = new RateLimiter(5, 60000); // 5 requests per minute
+
+// Constants
+const CONFIG = {
+    ACCESS_CODE_LENGTH: 6,
+    RATE_LIMIT_MAX: 5,
+    RATE_LIMIT_WINDOW: 60000
+};
 
 class TorBlogServer {
     constructor() {
         // Server config
         this.publicPath = path.join(__dirname, process.env.PUBLIC_PATH || 'public');
         this.downloadsPath = path.join(this.publicPath, 'downloads');
+        this.templatesPath = path.join(this.publicPath, 'templates');
         this.port = parseInt(process.env.PORT, 10) || 8080;
         this.host = process.env.HOST || '127.0.0.1';
         this.paymentsFile = process.env.PAYMENTS_FILE || './payments.json';
         this.torServiceDir = process.env.TOR_SERVICE_DIR || '/var/lib/tor/blog_service/';
         this.torServicePort = process.env.TOR_SERVICE_PORT || 80;
 
-        // Payment / contact config
-        this.currencyName = process.env.CURRENCY_NAME || 'IRONFISH';
-        this.ironfishPrice = process.env.IRONFISH_PRICE || '100';
-        this.ironfishAddress = process.env.IRONFISH_ADDRESS || '';
+        // Payment / contact config - UNIFIED XMR variables
+        this.currencyName = process.env.CURRENCY_NAME || 'XMR';
+        this.xmrPrice = process.env.XMR_PRICE || '1';
+        this.xmrAddress = process.env.XMR_ADDRESS || '';
 
         this.contactEmail = process.env.CONTACT_EMAIL || '';
         this.gpgFingerprint = process.env.GPG_FINGERPRINT || '';
         this.gpgDownloadPath = process.env.GPG_DOWNLOAD_PATH || '/download/gpg-key.asc';
 
         // Site metadata
-        this.siteTitle = process.env.SITE_TITLE || 'ZeroTrails | Ultimate Privacy Arsenal | 100 IRON';
+        this.siteTitle = process.env.SITE_TITLE || 'ZeroTrails | Ultimate Privacy Arsenal';
         this.siteDescription = process.env.SITE_DESCRIPTION || '';
         this.siteKeywords = process.env.SITE_KEYWORDS || '';
         this.siteAuthor = process.env.SITE_AUTHOR || '';
@@ -47,14 +57,14 @@ class TorBlogServer {
         this.checkEnv();
         this.ensureDownloadsFolder();
 
-        this.startServer();
+        this.server = this.startServer();
         paymentMonitor.startMonitoring();
+        this.setupGracefulShutdown();
     }
 
-    // Проверка критических переменных .env
     checkEnv() {
         const requiredVars = [
-            'IRONFISH_ADDRESS', 'CONTACT_EMAIL', 'GPG_FINGERPRINT',
+            'XMR_ADDRESS', 'CONTACT_EMAIL', 'GPG_FINGERPRINT',
             'ONION_ADDRESS', 'KEYSERVER_URL'
         ];
         let missing = requiredVars.filter(v => !process.env[v] || process.env[v].trim() === '');
@@ -63,7 +73,6 @@ class TorBlogServer {
         }
     }
 
-    // Создание папки downloads если нет
     ensureDownloadsFolder() {
         if (!fs.existsSync(this.downloadsPath)) {
             fs.mkdirSync(this.downloadsPath, { recursive: true });
@@ -80,20 +89,21 @@ class TorBlogServer {
 
             try {
                 if (pathname === '/' && req.method === 'GET') {
-                    // Await servePaywall if it's async
-                    Promise.resolve(this.servePaywall(req, res));
+                    this.servePaywall(req, res);
                 } else if (pathname === '/check-access' && req.method === 'POST') {
                     this.handleAccessCheck(req, res, parsedUrl);
                 } else if (pathname === '/blog' || pathname.startsWith('/blog/')) {
                     this.serveBlog(req, res, pathname, parsedUrl);
                 } else if (pathname.startsWith('/download/')) {
                     this.serveDownload(req, res, pathname);
+                } else if (pathname === '/health' && req.method === 'GET') {
+                    this.serveHealthCheck(req, res);
                 } else {
                     this.serveStatic(req, res, pathname);
                 }
             } catch (error) {
                 console.error('Server error:', error);
-                Promise.resolve(this.servePaywall(req, res));
+                this.servePaywall(req, res);
             }
         });
 
@@ -107,182 +117,53 @@ class TorBlogServer {
         server.on('error', (error) => {
             console.error('❌ Server error:', error);
         });
+
+        return server;
     }
 
     async servePaywall(req, res) {
-        const randomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const randomId = this.generateRandomId(CONFIG.ACCESS_CODE_LENGTH);
 
         const payment = await paymentMonitor.addPayment(randomId);
-        const payAddress = (payment && payment.subaddress) ? payment.subaddress : this.ironfishAddress;
+        const payAddress = (payment && payment.subaddress) ? payment.subaddress : this.xmrAddress;
 
-        const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${this.siteTitle}</title>
-<meta name="description" content="${this.siteDescription}">
-<meta name="keywords" content="${this.siteKeywords}">
-<meta name="robots" content="index, follow">
-<meta name="author" content="${this.siteAuthor}">
-<meta name="onion-location" content="${this.onionAddress}">
-<meta name="onion-service" content="true">
-<meta name="language" content="en">
-<link rel="stylesheet" href="./main.css">
-</head>
-<body>
-<div class="container">
-
-<div class="categories-menu">
-<a href="#" onclick="checkAuth('/blog/vpn')">VPN</a>•
-<a href="#" onclick="checkAuth('/blog/phones')">PHONES</a>•
-<a href="#" onclick="checkAuth('/blog/soft')">SOFTWARE</a>•
-<a href="#" onclick="checkAuth('/blog/crypto')">CRYPTO</a>•
-<a href="#" onclick="checkAuth('/blog/tor')">TOR</a>•
-<a href="#" onclick="checkAuth('/blog/os')">OS</a>•
-<a href="#" onclick="checkAuth('/blog/comms')">COMMS</a>•
-<a href="#" onclick="checkAuth('/blog/cloud')">CLOUD</a>•
-<a href="#" onclick="checkAuth('/blog/docs')">DOCS</a>
-</div>
-
-<div class="global-error" id="globalError">
-<button class="close-btn" onclick="closeGlobalError()">&times;</button>
-<div id="globalErrorContent">
-<strong>[!] ACCESS DENIED</strong><br>
-<span style="color: #ff8888;">Purchase subscription to access content</span>
-</div>
-</div>
-
-<div class="header">
-<h1>Z E R O . T R A I L S (USA)</h1>
-<p>Essential guide to becoming a ghost online and secure in the real world!</p>
-</div>
-
-<div class="payment-box">
-<div class="price">
-<h2>${this.ironfishPrice} $${this.currencyName}</h2>
-<p>365 DAYS ACCESS</p>
-</div>
-<div class="instructions">
-<h3>[>] PAYMENT INSTRUCTIONS:</h3>
-<ol>
-<li>Send <strong>${this.ironfishPrice} $${this.currencyName}</strong> to address:</li>
-<code>${payAddress}</code>
-<li><strong>YOUR ACCESS CODE:</strong></li>
-<code style="background: #000000ff; color: rgba(172, 255, 174, 1); font-size: 1em;">ACCESS-${randomId}</code>
-<li style="margin-top:8px;">Do NOT include this code in your Monero transaction. Use it below to unlock access after your payment confirms.</li>
-</ol>
-</div>
-<div class="access-form">
-<p>ENTER ACCESS CODE TO ACCESS:</p>
-<div class="error-message" id="errorMessage">
-<button class="close-btn" onclick="closeError()">&times;</button>
-<div id="errorContent"></div>
-</div>
-<form id="accessForm">
-<input type="text" id="memo_code" name="memo_code" placeholder="ACCESS-XXXXXX" required>
-<br>
-<button type="submit" id="submitBtn">> ACCESS PORTAL</button>
-</form>
-</div>
-</div>
-
-<div class="contact-info">
-<p>[CONTACT & SUPPORT]</p>
-<p>E-Mail: ${this.contactEmail}</p>
-<p>GPG: <span class="gpg-fingerprint" onclick="window.location.href='${this.gpgDownloadPath}'">${this.gpgFingerprint}</span></p>
-<div class="server-info" onclick="window.open('${this.keyserverUrl}', '_blank')">
-🔒 CLICK: keyserver
-</div>
-<div class="download-links">
-<a href="${this.downloadEncryptGuide}">Email Encryption Guide</a> |
-<a href="${this.downloadKleopatraWindows}">Kleopatra for Windows</a>
-</div>
-</div>
-
-<div class="footer">
-<p>NO LOGS | NO JS | TOR ONLY</p>
-</div>
-</div>
-
-<script>
-function checkAuth(url) {
-    const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token');
-    if (!token) { showGlobalError(); return false; }
-    window.location.href = url;
-    return true;
-}
-
-function showGlobalError() {
-    document.getElementById('globalError').classList.add('show');
-    document.getElementById('memo_code').focus();
-}
-
-function closeGlobalError() {
-    document.getElementById('globalError').classList.remove('show');
-}
-
-document.getElementById('accessForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    const memoCode = document.getElementById('memo_code').value.trim().toUpperCase();
-    const submitBtn = document.getElementById('submitBtn');
-    if (!memoCode.startsWith('ACCESS-')) {
-        showError('Invalid format! Must start with "ACCESS-"');
-        return;
-    }
-    submitBtn.disabled = true;
-    submitBtn.textContent = '> CHECKING...';
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/check-access', true);
-    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-    xhr.onreadystatechange = function() {
-        if (xhr.readyState === 4) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = '> ACCESS PORTAL';
-            if (xhr.status === 200) {
-                window.location.href = JSON.parse(xhr.responseText).redirect;
-            } else {
-                try {
-                    const response = JSON.parse(xhr.responseText);
-                    showError(response.message, response.reasons);
-                } catch (e) {
-                    showError('Unknown error occurred');
-                }
-            }
-        }
-    };
-    xhr.send('memo_code=' + encodeURIComponent(memoCode));
-});
-
-function showError(message, reasons = []) {
-    const errorDiv = document.getElementById('errorMessage');
-    const errorContent = document.getElementById('errorContent');
-    let content = '<strong>[!] ' + message + '</strong>';
-    if (reasons.length > 0) {
-        content += '<ul>';
-        reasons.forEach(reason => content += '<li>' + reason + '</li>');
-        content += '</ul>';
-    }
-    errorContent.innerHTML = content;
-    errorDiv.classList.add('show');
-}
-
-function closeError() {
-    document.getElementById('errorMessage').classList.remove('show');
-}
-
-document.addEventListener('click', function(e) {
-    const errorDiv = document.getElementById('errorMessage');
-    const globalError = document.getElementById('globalError');
-    if (e.target === errorDiv) closeError();
-    if (e.target === globalError) closeGlobalError();
-});
-</script>
-</body>
-</html>`;
+        const html = this.fillTemplate({
+            SITE_TITLE: this.siteTitle,
+            SITE_DESCRIPTION: this.siteDescription,
+            SITE_KEYWORDS: this.siteKeywords,
+            SITE_AUTHOR: this.siteAuthor,
+            ONION_ADDRESS: this.onionAddress,
+            XMR_PRICE: this.xmrPrice,
+            CURRENCY_NAME: this.currencyName,
+            PAY_ADDRESS: payAddress,
+            RANDOM_ID: randomId,
+            CONTACT_EMAIL: this.contactEmail,
+            GPG_FINGERPRINT: this.gpgFingerprint,
+            GPG_DOWNLOAD_PATH: this.gpgDownloadPath,
+            KEYSERVER_URL: this.keyserverUrl,
+            DOWNLOAD_ENCRYPT_GUIDE: this.downloadEncryptGuide,
+            DOWNLOAD_KLEOPATRA_WINDOWS: this.downloadKleopatraWindows
+        });
 
         this.sendResponse(res, 200, 'text/html', html);
+    }
+
+    fillTemplate(vars) {
+        const templatePath = path.join(this.templatesPath, 'paywall.html');
+        try {
+            let template = fs.readFileSync(templatePath, 'utf8');
+            return Object.entries(vars).reduce(
+                (html, [key, value]) => html.replace(new RegExp(`{{${key}}}`, 'g'), value),
+                template
+            );
+        } catch (error) {
+            console.error('Template read error:', error.message);
+            return `<html><body><h1>Error loading template</h1></body></html>`;
+        }
+    }
+
+    generateRandomId(length = CONFIG.ACCESS_CODE_LENGTH) {
+        return Math.random().toString(36).substring(2, 2 + length).toUpperCase();
     }
 
     serveDownload(req, res, pathname) {
@@ -291,7 +172,8 @@ document.addEventListener('click', function(e) {
 
         fs.access(filePath, fs.constants.F_OK, (err) => {
             if (err) {
-                Promise.resolve(this.servePaywall(req, res));
+                console.error(`File not found: ${filePath}`);
+                this.servePaywall(req, res);
                 return;
             }
 
@@ -310,6 +192,14 @@ document.addEventListener('click', function(e) {
     }
 
     handleAccessCheck(req, res) {
+        const ip = req.socket.remoteAddress || 'unknown';
+
+        // Rate limiting
+        if (!rateLimiter.check(ip)) {
+            this.sendJsonError(res, 'Too many requests, please wait', ['Maximum 5 requests per minute allowed']);
+            return;
+        }
+
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', () => {
@@ -321,16 +211,15 @@ document.addEventListener('click', function(e) {
                 return;
             }
 
-            const payments = this.loadPayments();
-            // Adjusted: match payments entry by access code (without "ACCESS-"), and confirmed status
-            const payment = Object.values(payments).find(p => p.memo === memoCode.replace('ACCESS-','') && p.status === 'confirmed');
+            const memo = memoCode.replace('ACCESS-', '');
+            const payment = paymentMonitor.payments[memo];
 
-            if (payment) {
+            if (payment && payment.status === 'confirmed') {
                 this.sendJsonSuccess(res, `/blog?token=${payment.access_token}`);
             } else {
                 const reasons = [
                     'Transaction not confirmed yet (wait ~1-2 minutes after paying)',
-                    `Payment amount less than ${this.ironfishPrice} $${this.currencyName}`,
+                    `Payment amount less than ${this.xmrPrice} $${this.currencyName}`,
                     'Wrong recipient address (use the address shown above)',
                 ];
                 this.sendJsonError(res, `Payment with access code ${memoCode} not found or not confirmed`, reasons);
@@ -354,8 +243,8 @@ document.addEventListener('click', function(e) {
 
     serveBlog(req, res, pathname, parsedUrl) {
         const token = parsedUrl.query.token;
-        if (!token || !accessControl.checkAccess(token)) {
-            Promise.resolve(this.servePaywall(req, res));
+        if (!token || !accessControl.validateToken(token) || !accessControl.checkAccess(token)) {
+            this.servePaywall(req, res);
             return;
         }
 
@@ -368,10 +257,18 @@ document.addEventListener('click', function(e) {
         const fullPath = path.join(this.publicPath, filePath);
 
         fs.access(fullPath, fs.constants.F_OK, (err) => {
-            if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
+            if (err) {
+                console.error(`Blog file not found: ${fullPath}`);
+                this.servePaywall(req, res);
+                return;
+            }
 
             fs.readFile(fullPath, 'utf8', (err, data) => {
-                if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
+                if (err) {
+                    console.error(`Blog file read error: ${fullPath}`, err.message);
+                    this.servePaywall(req, res);
+                    return;
+                }
 
                 if (path.extname(fullPath).toLowerCase() === '.html') {
                     data = this.injectTokenIntoContent(data, token);
@@ -384,29 +281,48 @@ document.addEventListener('click', function(e) {
     }
 
     injectTokenIntoContent(html, token) {
-        return html
-            .replace(/href="\/([^"]*)"/g, `href="/blog/$1?token=${token}"`)
-            .replace(/href='\/([^']*)'/g, `href='/blog/$1?token=${token}'`)
-            .replace(/action="\/([^"]*)"/g, `action="/blog/$1?token=${token}"`)
-            .replace(/action='\/([^']*)'/g, `action='/blog/$1?token=${token}'`)
-            .replace(/src="\/([^"]*)"/g, `src="/blog/$1?token=${token}"`)
-            .replace(/src='\/([^']*)'/g, `src='/blog/$1?token=${token}'`);
+        // Optimized: single regex for href, src, action
+        return html.replace(
+            /(href|src|action)=["']\/([^"']*?)["']/g,
+            (match, attr, path) => `${attr}="/blog/${path}?token=${token}"`
+        );
     }
 
     serveStatic(req, res, pathname) {
-        if (pathname === '/' || pathname.startsWith('/blog')) { Promise.resolve(this.servePaywall(req, res)); return; }
+        if (pathname === '/' || pathname.startsWith('/blog')) {
+            this.servePaywall(req, res);
+            return;
+        }
 
         const fullPath = path.join(this.publicPath, pathname);
         fs.access(fullPath, fs.constants.F_OK, (err) => {
-            if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
+            if (err) {
+                console.error(`Static file not found: ${fullPath}`);
+                this.servePaywall(req, res);
+                return;
+            }
 
             fs.readFile(fullPath, (err, data) => {
-                if (err) { Promise.resolve(this.servePaywall(req, res)); return; }
+                if (err) {
+                    console.error(`Static file read error: ${fullPath}`, err.message);
+                    this.servePaywall(req, res);
+                    return;
+                }
 
                 const contentType = this.getContentType(path.extname(fullPath).toLowerCase());
                 this.sendResponse(res, 200, contentType, data);
             });
         });
+    }
+
+    serveHealthCheck(req, res) {
+        const health = {
+            status: 'ok',
+            uptime: process.uptime(),
+            timestamp: Date.now(),
+            rpc_connected: !!paymentMonitor.rpcUrl
+        };
+        this.sendJsonResponse(res, 200, health);
     }
 
     getContentType(ext) {
@@ -442,9 +358,25 @@ document.addEventListener('click', function(e) {
         res.end(data);
     }
 
-    loadPayments() {
-        try { return JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8')); }
-        catch { return {}; }
+    setupGracefulShutdown() {
+        const shutdown = (signal) => {
+            console.log(`\n${signal} received, shutting down gracefully...`);
+            this.server.close(() => {
+                console.log('✅ Server closed');
+                paymentMonitor.savePayments();
+                console.log('✅ Payments saved');
+                process.exit(0);
+            });
+
+            // Force shutdown after 10 seconds
+            setTimeout(() => {
+                console.error('❌ Forced shutdown after timeout');
+                process.exit(1);
+            }, 10000);
+        };
+
+        process.on('SIGTERM', () => shutdown('SIGTERM'));
+        process.on('SIGINT', () => shutdown('SIGINT'));
     }
 }
 
