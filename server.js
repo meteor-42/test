@@ -67,14 +67,14 @@ class TorBlogServer {
         ];
         let missing = requiredVars.filter(v => !process.env[v] || process.env[v].trim() === '');
         if (missing.length > 0) {
-            console.warn('⚠️  WARNING: Missing critical .env variables:', missing.join(', '));
+            console.warn('[WARNING] Missing critical .env variables:', missing.join(', '));
         }
     }
 
     ensureDownloadsFolder() {
         if (!fs.existsSync(this.downloadsPath)) {
             fs.mkdirSync(this.downloadsPath, { recursive: true });
-            console.log(`📂 Created downloads folder at ${this.downloadsPath}`);
+            console.log(`[INIT] Created downloads folder at ${this.downloadsPath}`);
         }
     }
 
@@ -106,14 +106,14 @@ class TorBlogServer {
         });
 
         server.listen(this.port, this.host, () => {
-            console.log(`🔒 Tor server running on http://${this.host}:${this.port}`);
-            console.log('🌐 Configure Tor with:');
+            console.log(`[SERVER] Tor server running on http://${this.host}:${this.port}`);
+            console.log('[TOR] Configure Tor with:');
             console.log(`HiddenServiceDir ${this.torServiceDir}`);
             console.log(`HiddenServicePort ${this.torServicePort} ${this.host}:${this.port}`);
         });
 
         server.on('error', (error) => {
-            console.error('❌ Server error:', error);
+            console.error('[ERROR] Server error:', error);
         });
 
         return server;
@@ -360,15 +360,15 @@ class TorBlogServer {
         const shutdown = (signal) => {
             console.log(`\n${signal} received, shutting down gracefully...`);
             this.server.close(() => {
-                console.log('✅ Server closed');
+                console.log('[OK] Server closed');
                 xmrManager.savePayments();
-                console.log('✅ Payments saved');
+                console.log('[OK] Payments saved');
                 process.exit(0);
             });
 
             // Force shutdown after 10 seconds
             setTimeout(() => {
-                console.error('❌ Forced shutdown after timeout');
+                console.error('[ERROR] Forced shutdown after timeout');
                 process.exit(1);
             }, 10000);
         };

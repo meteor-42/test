@@ -23,13 +23,13 @@ class XMRManager {
         this.amountXmr = parseFloat(process.env.XMR_PAYMENT_AMOUNT || '0.1');
         this.amountAtomic = Math.round(this.amountXmr * 1e12);
 
-        console.log(`💰 XMR Manager initialized: ${this.amountXmr} XMR required`);
+        console.log(`[XMR] Manager initialized: ${this.amountXmr} XMR required`);
     }
 
     // ========== MONITORING ==========
 
     startMonitoring() {
-        console.log('🔍 Starting payment monitoring (every 15 seconds)...');
+        console.log('[MONITOR] Starting payment monitoring (every 15 seconds)...');
         setInterval(() => this.checkPayments(), 15000);
     }
 
@@ -47,7 +47,7 @@ class XMRManager {
                 payment.access_token = this.generateToken();
                 payment.confirmed_at = Date.now();
                 updated = true;
-                console.log(`✅ Payment confirmed: ${memo} -> token: ${payment.access_token}`);
+                console.log(`[OK] Payment confirmed: ${memo} -> token: ${payment.access_token}`);
             }
         }
 
@@ -60,7 +60,7 @@ class XMRManager {
                 return await this.checkTransaction(subaddressIndex);
             } catch (error) {
                 if (i === retries - 1) {
-                    console.error(`❌ Failed to check transaction after ${retries} attempts:`, error.message);
+                    console.error(`[ERROR] Failed to check transaction after ${retries} attempts:`, error.message);
                     return false;
                 }
                 await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
@@ -71,7 +71,7 @@ class XMRManager {
 
     async checkTransaction(subaddressIndex) {
         if (!this.rpcUrl) {
-            console.warn('⚠️  XMR_RPC_URL not set; cannot check transactions');
+            console.warn('[WARNING] XMR_RPC_URL not set; cannot check transactions');
             return false;
         }
         try {
@@ -98,7 +98,7 @@ class XMRManager {
                 return idx === subaddressIndex && confirmations >= this.confirmationsRequired && amount >= this.amountAtomic;
             });
         } catch (e) {
-            console.error('❌ RPC error (get_transfers):', e.response?.data || e.message);
+            console.error('[ERROR] RPC error (get_transfers):', e.response?.data || e.message);
             throw e;
         }
     }
@@ -123,15 +123,15 @@ class XMRManager {
                 );
                 subaddressIndex = resp.data?.result?.address_index;
                 subaddress = resp.data?.result?.address;
-                console.log(`📝 Created subaddress for ${memo}: index ${subaddressIndex}`);
+                console.log(`[INFO] Created subaddress for ${memo}: index ${subaddressIndex}`);
             } catch (e) {
-                console.error('❌ RPC error (create_address):', e.response?.data || e.message);
+                console.error('[ERROR] RPC error (create_address):', e.response?.data || e.message);
             }
         }
 
         if (typeof subaddressIndex !== 'number') {
             subaddressIndex = Object.keys(this.payments).length + 1;
-            console.warn(`⚠️  Using fallback subaddress index: ${subaddressIndex}`);
+            console.warn(`[WARNING] Using fallback subaddress index: ${subaddressIndex}`);
         }
         if (!subaddress) {
             subaddress = this.mainAddress ? `${this.mainAddress}` : `ADDRESS_${subaddressIndex}`;
@@ -196,7 +196,7 @@ class XMRManager {
 
         if (cleaned > 0) {
             this.savePayments();
-            console.log(`🗑️  Cleaned up ${cleaned} old pending payments`);
+            console.log(`[CLEANUP] Cleaned up ${cleaned} old pending payments`);
         }
 
         return cleaned;
@@ -211,10 +211,10 @@ class XMRManager {
     loadPayments() {
         try {
             const data = JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8'));
-            console.log(`📊 Loaded ${Object.keys(data).length} payments from database`);
+            console.log(`[DB] Loaded ${Object.keys(data).length} payments from database`);
             return data;
         } catch {
-            console.log('📊 Creating new payments database');
+            console.log('[DB] Creating new payments database');
             return {};
         }
     }
@@ -223,7 +223,7 @@ class XMRManager {
         try {
             fs.writeFileSync(this.paymentsFile, JSON.stringify(this.payments, null, 2));
         } catch (e) {
-            console.error('❌ Failed to save payments:', e.message);
+            console.error('[ERROR] Failed to save payments:', e.message);
         }
     }
 
