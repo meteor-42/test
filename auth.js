@@ -1,26 +1,20 @@
 // Access control based on payments.json
-const fs = require('fs');
+const PaymentsManager = require('./payments-manager');
 require('dotenv').config();
 
 class AccessControl {
   constructor() {
-    this.paymentsFile = process.env.PAYMENTS_FILE || './payments.json';
-  }
-
-  loadPayments() {
-    try {
-      return JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8'));
-    } catch {
-      return {};
-    }
+    this.paymentsManager = new PaymentsManager(process.env.PAYMENTS_FILE || './payments.json');
   }
 
   checkAccess(token) {
     if (!token) return false;
-    const payments = this.loadPayments();
-    return Object.values(payments).some(
-      (p) => p && p.status === 'confirmed' && p.access_token === token
-    );
+    return !!this.paymentsManager.findByToken(token);
+  }
+
+  validateToken(token) {
+    // Token should be alphanumeric, 10 characters
+    return typeof token === 'string' && /^[a-z0-9]{10}$/i.test(token);
   }
 }
 
