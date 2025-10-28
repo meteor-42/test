@@ -1,244 +1,79 @@
+// xmr-monitor.js
+const axios = require('axios');
 const fs = require('fs');
-const { exec } = require('child_process');
-const AccessControl = require('./auth');
+require('dotenv').config();
 
 class PaymentMonitor {
     constructor() {
-        this.paymentsFile = './payments.json';
-        this.accessControl = new AccessControl();
-        this.loadPayments();
+        this.paymentsFile = process.env.PAYMENTS_FILE || './payments.json';
+        this.payments = this.loadPayments();
+        this.rpcUrl = process.env.XMR_RPC_URL;
+        this.mainAddress = process.env.XMR_ADDRESS;
+        this.viewKey = process.env.XMR_VIEW_KEY;
+        this.amount = parseFloat(process.env.XMR_PAYMENT_AMOUNT) || 0.1;
+    }
+
+    startMonitoring() {
+        setInterval(() => this.checkPayments(), 15000); // каждые 15 секунд
+    }
+
+    async checkPayments() {
+        for (const memo in this.payments) {
+            const payment = this.payments[memo];
+            if (payment.status === 'pending') {
+                const confirmed = await this.checkTransaction(payment.subaddressIndex, memo);
+                if (confirmed) {
+                    payment.status = 'confirmed';
+                    payment.access_token = this.generateToken();
+                    this.savePayments();
+                }
+            }
+        }
+    }
+
+    async checkTransaction(subaddressIndex, memo) {
+        try {
+            const response = await axios.post(this.rpcUrl, {
+                jsonrpc: "2.0",
+                id: "0",
+                method: "get_transfers",
+                params: {
+                    in: true,
+                    account_index: 0,
+                    subaddr_indices: [subaddressIndex]
+                }
+            });
+            const transfers = response.data.result.in || [];
+            return transfers.some(tx => tx.payment_id === memo && tx.amount >= this.amount * 1e12);
+        } catch (e) {
+            console.error('RPC error:', e.message);
+            return false;
+        }
+    }
+
+    addPayment(memo) {
+        const subaddressIndex = Object.keys(this.payments).length + 1;
+        const subaddress = `${this.mainAddress}+${subaddressIndex}`; // просто placeholder, реальная генерация через RPC
+        const payment = { memo, subaddress, subaddressIndex, status: 'pending' };
+        this.payments[memo] = payment;
+        this.savePayments();
+        return payment;
+    }
+
+    generateToken() {
+        return Math.random().toString(36).substring(2, 12);
     }
 
     loadPayments() {
         try {
-            this.payments = JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8'));
+            return JSON.parse(fs.readFileSync(this.paymentsFile, 'utf8'));
         } catch {
-            this.payments = {};
-            this.savePayments();
+            return {};
         }
     }
 
     savePayments() {
         fs.writeFileSync(this.paymentsFile, JSON.stringify(this.payments, null, 2));
-    }
-
-    // Основной метод проверки платежей
-    checkPayments() {
-        console.log('🔍 Checking for new payments...');
-        
-        this.getTransactions((error, transactions) => {
-            if (error) {
-                console.error('❌ Failed to get transactions:', error);
-                return;
-            }
-
-            const relevantTxs = transactions.filter(tx => 
-                tx.memo && 
-                tx.memo.startsWith('BLOG-ACCESS-') && 
-                tx.amount >= 10
-            );
-
-            if (relevantTxs.length > 0) {
-                console.log(`💰 Found ${relevantTxs.length} relevant transactions`);
-                relevantTxs.forEach(tx => this.processTransaction(tx));
-            }
-        });
-    }
-
-    // Получение транзакций через IronFish CLI
-    getTransactions(callback) {
-        exec('ironfish wallet:transactions', (error, stdout, stderr) => {
-            if (error) {
-                callback(error, null);
-                return;
-            }
-
-            if (stderr) {
-                console.error('IronFish stderr:', stderr);
-            }
-
-            const transactions = this.parseTransactionOutput(stdout);
-            callback(null, transactions);
-        });
-    }
-
-    // Парсинг вывода IronFish CLI
-    parseTransactionOutput(output) {
-        const transactions = [];
-        const lines = output.split('\n');
-        
-        let currentTx = null;
-        let inTransactionBlock = false;
-
-        for (const line of lines) {
-            const trimmed = line.trim();
-
-            // Начало новой транзакции
-            if (trimmed.startsWith('Transaction:')) {
-                if (currentTx) {
-                    transactions.push(currentTx);
-                }
-                currentTx = { hash: '', amount: 0, memo: '', status: '' };
-                inTransactionBlock = true;
-                continue;
-            }
-
-            if (!inTransactionBlock || !currentTx) continue;
-
-            // Извлечение данных транзакции
-            if (trimmed.startsWith('Hash:')) {
-                currentTx.hash = trimmed.replace('Hash:', '').trim();
-            }
-            else if (trimmed.startsWith('Amount:')) {
-                const amountStr = trimmed.replace('Amount:', '').trim();
-                const amountMatch = amountStr.match(/([\d.]+)\s+IRON/);
-                if (amountMatch) {
-                    currentTx.amount = parseFloat(amountMatch[1]);
-                }
-            }
-            else if (trimmed.startsWith('Memo:')) {
-                currentTx.memo = trimmed.replace('Memo:', '').trim();
-            }
-            else if (trimmed.startsWith('Status:')) {
-                currentTx.status = trimmed.replace('Status:', '').trim();
-            }
-            // Конец блока транзакции
-            else if (trimmed === '' && currentTx.hash) {
-                transactions.push(currentTx);
-                currentTx = null;
-                inTransactionBlock = false;
-            }
-        }
-
-        // Добавляем последнюю транзакцию
-        if (currentTx && currentTx.hash) {
-            transactions.push(currentTx);
-        }
-
-        return transactions.filter(tx => tx.status === 'confirmed' || tx.status === 'pending');
-    }
-
-    // Обработка отдельной транзакции
-    processTransaction(tx) {
-        // Проверяем, не обрабатывали ли уже эту транзакцию
-        if (this.payments[tx.hash]) {
-            return;
-        }
-
-        console.log(`🔄 Processing transaction: ${tx.hash}`);
-        console.log(`   Memo: ${tx.memo}, Amount: ${tx.amount} IRON, Status: ${tx.status}`);
-
-        // Для confirmed транзакций сразу создаем доступ
-        if (tx.status === 'confirmed') {
-            this.grantAccess(tx);
-        }
-        // Для pending транзакций проверяем позже
-        else if (tx.status === 'pending') {
-            console.log(`   ⏳ Transaction pending, will check later: ${tx.hash}`);
-            this.payments[tx.hash] = {
-                memo: tx.memo,
-                amount: tx.amount,
-                status: 'pending',
-                first_seen: Date.now()
-            };
-            this.savePayments();
-        }
-    }
-
-    // Создание доступа
-    grantAccess(tx) {
-        const accessToken = this.accessControl.createAccess(tx.memo);
-        
-        this.payments[tx.hash] = {
-            memo: tx.memo,
-            amount: tx.amount,
-            status: 'confirmed',
-            access_token: accessToken,
-            processed_at: Date.now(),
-            confirmed_at: Date.now()
-        };
-        
-        this.savePayments();
-        console.log(`✅ Access granted for memo: ${tx.memo}`);
-        console.log(`   Token: ${accessToken}`);
-    }
-
-    // Проверка pending транзакций
-    checkPendingTransactions() {
-        const pendingTxs = Object.entries(this.payments)
-            .filter(([hash, data]) => data.status === 'pending')
-            .map(([hash, data]) => ({ hash, ...data }));
-
-        if (pendingTxs.length > 0) {
-            console.log(`🔍 Checking ${pendingTxs.length} pending transactions...`);
-            
-            this.getTransactions((error, currentTxs) => {
-                if (error) return;
-
-                pendingTxs.forEach(pending => {
-                    const currentTx = currentTxs.find(tx => tx.hash === pending.hash);
-                    
-                    if (currentTx && currentTx.status === 'confirmed') {
-                        console.log(`✅ Transaction confirmed: ${pending.hash}`);
-                        this.grantAccess({
-                            hash: pending.hash,
-                            memo: pending.memo,
-                            amount: pending.amount,
-                            status: 'confirmed'
-                        });
-                    }
-                    // Если транзакция висит pending слишком долго
-                    else if (Date.now() - pending.first_seen > 30 * 60 * 1000) { // 30 минут
-                        console.log(`❌ Transaction stuck: ${pending.hash}`);
-                        delete this.payments[pending.hash];
-                        this.savePayments();
-                    }
-                });
-            });
-        }
-    }
-
-    startMonitoring() {
-        console.log('🚀 Starting payment monitoring system...');
-        
-        // Основная проверка каждые 30 секунд
-        setInterval(() => {
-            this.checkPayments();
-        }, 30000);
-        
-        // Проверка pending транзакций каждые 2 минуты
-        setInterval(() => {
-            this.checkPendingTransactions();
-        }, 120000);
-        
-        // Очистка старых записей раз в день
-        setInterval(() => {
-            this.cleanupOldRecords();
-        }, 24 * 60 * 60 * 1000);
-        
-        // Первая проверка
-        setTimeout(() => {
-            this.checkPayments();
-            this.checkPendingTransactions();
-        }, 5000);
-    }
-
-    cleanupOldRecords() {
-        const now = Date.now();
-        const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
-        
-        let cleaned = 0;
-        Object.keys(this.payments).forEach(hash => {
-            if (this.payments[hash].processed_at && this.payments[hash].processed_at < thirtyDaysAgo) {
-                delete this.payments[hash];
-                cleaned++;
-            }
-        });
-        
-        if (cleaned > 0) {
-            this.savePayments();
-            console.log(`🧹 Cleaned ${cleaned} old payment records`);
-        }
     }
 }
 
