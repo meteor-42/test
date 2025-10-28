@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{SITE_TITLE}}</title>
+<meta name="description" content="{{SITE_DESCRIPTION}}">
+<meta name="keywords" content="{{SITE_KEYWORDS}}">
+<meta name="robots" content="index, follow">
+<meta name="author" content="{{SITE_AUTHOR}}">
+<meta name="onion-location" content="{{ONION_ADDRESS}}">
+<meta name="onion-service" content="true">
+<meta name="language" content="en">
+<link rel="stylesheet" href="./main.css">
+</head>
+<body>
+<div class="container">
+
+<div class="categories-menu">
+<a href="#" onclick="checkAuth('/blog/vpn')">VPN</a>•
+<a href="#" onclick="checkAuth('/blog/phones')">PHONES</a>•
+<a href="#" onclick="checkAuth('/blog/soft')">SOFTWARE</a>•
+<a href="#" onclick="checkAuth('/blog/crypto')">CRYPTO</a>•
+<a href="#" onclick="checkAuth('/blog/tor')">TOR</a>•
+<a href="#" onclick="checkAuth('/blog/os')">OS</a>•
+<a href="#" onclick="checkAuth('/blog/comms')">COMMS</a>•
+<a href="#" onclick="checkAuth('/blog/cloud')">CLOUD</a>•
+<a href="#" onclick="checkAuth('/blog/docs')">DOCS</a>
+</div>
+
+<div class="global-error" id="globalError">
+<button class="close-btn" onclick="closeGlobalError()">&times;</button>
+<div id="globalErrorContent">
+<strong>[!] ACCESS DENIED</strong><br>
+<span style="color: #ff8888;">Purchase subscription to access content</span>
+</div>
+</div>
+
+<div class="header">
+<h1>Z E R O . T R A I L S (USA)</h1>
+<p>Essential guide to becoming a ghost online and secure in the real world!</p>
+</div>
+
+<div class="payment-box">
+<div class="price">
+<h2>{{XMR_PRICE}} ${{CURRENCY_NAME}}</h2>
+<p>365 DAYS ACCESS</p>
+</div>
+<div class="instructions">
+<h3>[>] PAYMENT INSTRUCTIONS:</h3>
+<ol>
+<li>Send <strong>{{XMR_PRICE}} ${{CURRENCY_NAME}}</strong> to address:</li>
+<code>{{PAY_ADDRESS}}</code>
+<li><strong>YOUR ACCESS CODE:</strong></li>
+<code style="background: #000000ff; color: rgba(172, 255, 174, 1); font-size: 1em;">ACCESS-{{RANDOM_ID}}</code>
+<li style="margin-top:8px;">Do NOT include this code in your Monero transaction. Use it below to unlock access after your payment confirms.</li>
+</ol>
+</div>
+<div class="access-form">
+<p>ENTER ACCESS CODE TO ACCESS:</p>
+<div class="error-message" id="errorMessage">
+<button class="close-btn" onclick="closeError()">&times;</button>
+<div id="errorContent"></div>
+</div>
+<form id="accessForm">
+<input type="text" id="memo_code" name="memo_code" placeholder="ACCESS-XXXXXX" required>
+<br>
+<button type="submit" id="submitBtn">> ACCESS PORTAL</button>
+</form>
+</div>
+</div>
+
+<div class="contact-info">
+<p>[CONTACT & SUPPORT]</p>
+<p>E-Mail: {{CONTACT_EMAIL}}</p>
+<p>GPG: <span class="gpg-fingerprint" onclick="window.location.href='{{GPG_DOWNLOAD_PATH}}'">{{GPG_FINGERPRINT}}</span></p>
+<div class="server-info" onclick="window.open('{{KEYSERVER_URL}}', '_blank')">
+🔒 CLICK: keyserver
+</div>
+<div class="download-links">
+<a href="{{DOWNLOAD_ENCRYPT_GUIDE}}">Email Encryption Guide</a> |
+<a href="{{DOWNLOAD_KLEOPATRA_WINDOWS}}">Kleopatra for Windows</a>
+</div>
+</div>
+
+<div class="footer">
+<p>NO LOGS | NO JS | TOR ONLY</p>
+</div>
+</div>
+
+<script>
+function checkAuth(url) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    if (!token) { showGlobalError(); return false; }
+    window.location.href = url;
+    return true;
+}
+
+function showGlobalError() {
+    document.getElementById('globalError').classList.add('show');
+    document.getElementById('memo_code').focus();
+}
+
+function closeGlobalError() {
+    document.getElementById('globalError').classList.remove('show');
+}
+
+document.getElementById('accessForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const memoCode = document.getElementById('memo_code').value.trim().toUpperCase();
+    const submitBtn = document.getElementById('submitBtn');
+    if (!memoCode.startsWith('ACCESS-')) {
+        showError('Invalid format! Must start with "ACCESS-"');
+        return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = '> CHECKING...';
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/check-access', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = '> ACCESS PORTAL';
+            if (xhr.status === 200) {
+                window.location.href = JSON.parse(xhr.responseText).redirect;
+            } else {
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    showError(response.message, response.reasons);
+                } catch (e) {
+                    showError('Unknown error occurred');
+                }
+            }
+        }
+    };
+    xhr.send('memo_code=' + encodeURIComponent(memoCode));
+});
+
+function showError(message, reasons = []) {
+    const errorDiv = document.getElementById('errorMessage');
+    const errorContent = document.getElementById('errorContent');
+    let content = '<strong>[!] ' + message + '</strong>';
+    if (reasons.length > 0) {
+        content += '<ul>';
+        reasons.forEach(reason => content += '<li>' + reason + '</li>');
+        content += '</ul>';
+    }
+    errorContent.innerHTML = content;
+    errorDiv.classList.add('show');
+}
+
+function closeError() {
+    document.getElementById('errorMessage').classList.remove('show');
+}
+
+document.addEventListener('click', function(e) {
+    const errorDiv = document.getElementById('errorMessage');
+    const globalError = document.getElementById('globalError');
+    if (e.target === errorDiv) closeError();
+    if (e.target === globalError) closeGlobalError();
+});
+</script>
+</body>
+</html>
